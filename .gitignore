@@ -1,0 +1,39 @@
+# Entorno virtual
+venv/
+env/
+ENV/
+.venv
+
+# Variables de entorno (no subir credenciales)
+.env
+.env.local
+
+# Archivos con credenciales
+users-passwords.txt
+*.passwords.txt
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Streamlit
+# Incluir config.toml pero excluir otros archivos de configuración local
+.streamlit/secrets.toml
+.streamlit/credentials.json
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
