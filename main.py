@@ -1300,6 +1300,37 @@ def page_gestionar_personal():
 					
 					if person.get('resumen_ia'):
 						st.markdown(f"**Resumen IA:**\n{person.get('resumen_ia')}")
+					
+					if person.get('otros'):
+						st.markdown(f"**Otros:**\n{person.get('otros')}")
+					
+					# Botón de eliminar al final de todos los datos
+					st.markdown("---")
+					col_delete1, col_delete2 = st.columns([3, 1])
+					with col_delete2:
+						if st.button("🗑️ Eliminar", key=f"delete_person_{person.get('id')}", type="secondary"):
+							if f"confirm_delete_person_{person.get('id')}" not in st.session_state:
+								st.session_state[f"confirm_delete_person_{person.get('id')}"] = True
+								st.rerun()
+					
+					# Mostrar diálogo de confirmación si se hizo clic en eliminar
+					if f"confirm_delete_person_{person.get('id')}" in st.session_state and st.session_state[f"confirm_delete_person_{person.get('id')}"]:
+						st.warning(f"⚠️ ¿Estás seguro de eliminar a {person.get('nombre', '')} {person.get('apellido', '')}?")
+						col_yes, col_no = st.columns(2)
+						with col_yes:
+							if st.button("✅ Sí, eliminar", key=f"yes_delete_person_{person.get('id')}", type="primary"):
+								try:
+									supabase.table("personal").delete().eq("id", person.get('id')).execute()
+									st.success(f"✅ {person.get('nombre', '')} {person.get('apellido', '')} eliminado exitosamente")
+									del st.session_state[f"confirm_delete_person_{person.get('id')}"]
+									st.rerun()
+								except Exception as e:
+									st.error(f"❌ Error al eliminar: {str(e)}")
+									del st.session_state[f"confirm_delete_person_{person.get('id')}"]
+						with col_no:
+							if st.button("❌ No, cancelar", key=f"no_delete_person_{person.get('id')}"):
+								del st.session_state[f"confirm_delete_person_{person.get('id')}"]
+								st.rerun()
 		else:
 			st.info("No se encontró personal con los filtros seleccionados")
 	
@@ -1482,6 +1513,67 @@ def page_gestionar_proyectos():
 					
 					if proyecto.get('descripcion'):
 						st.markdown(f"**Descripción:**\n{proyecto.get('descripcion')}")
+					
+					# Listado de profesionales asignados
+					try:
+						profesionales_asignados = supabase.table("personal").select("nombre, apellido").eq("proyecto_id", proyecto.get('id')).eq("activo", True).execute()
+						if profesionales_asignados.data and len(profesionales_asignados.data) > 0:
+							st.markdown("---")
+							st.markdown("**Profesionales asignados:**")
+							profesionales_list = []
+							for idx, prof in enumerate(profesionales_asignados.data, 1):
+								nombre_completo = f"{prof.get('nombre', '')} {prof.get('apellido', '')}".strip()
+								if nombre_completo:
+									profesionales_list.append(f"{idx}. {nombre_completo}")
+							if profesionales_list:
+								st.markdown("\n".join(profesionales_list))
+						else:
+							st.markdown("---")
+							st.markdown("*Sin profesionales asignados*")
+					except Exception as e:
+						st.markdown("---")
+						st.markdown("*Error al cargar profesionales asignados*")
+					
+					# Botón de eliminar
+					st.markdown("---")
+					col_delete1, col_delete2 = st.columns([3, 1])
+					with col_delete2:
+						if st.button("🗑️ Eliminar", key=f"delete_proyecto_{proyecto.get('id')}", type="secondary"):
+							if f"confirm_delete_proyecto_{proyecto.get('id')}" not in st.session_state:
+								st.session_state[f"confirm_delete_proyecto_{proyecto.get('id')}"] = True
+								st.rerun()
+					
+					# Mostrar diálogo de confirmación si se hizo clic en eliminar
+					if f"confirm_delete_proyecto_{proyecto.get('id')}" in st.session_state and st.session_state[f"confirm_delete_proyecto_{proyecto.get('id')}"]:
+						# Verificar si hay personal asignado
+						try:
+							personal_asignado = supabase.table("personal").select("id, nombre, apellido").eq("proyecto_id", proyecto.get('id')).execute()
+							if personal_asignado.data and len(personal_asignado.data) > 0:
+								st.warning(f"⚠️ No se puede eliminar el proyecto porque tiene {len(personal_asignado.data)} profesional(es) asignado(s). Primero desasigna el personal.")
+								if st.button("❌ Cerrar", key=f"close_warning_proyecto_{proyecto.get('id')}"):
+									del st.session_state[f"confirm_delete_proyecto_{proyecto.get('id')}"]
+									st.rerun()
+							else:
+								st.warning(f"⚠️ ¿Estás seguro de eliminar el proyecto '{proyecto.get('nombre', '')}'?")
+								col_yes, col_no = st.columns(2)
+								with col_yes:
+									if st.button("✅ Sí, eliminar", key=f"yes_delete_proyecto_{proyecto.get('id')}", type="primary"):
+										try:
+											supabase.table("proyectos").delete().eq("id", proyecto.get('id')).execute()
+											st.success(f"✅ Proyecto '{proyecto.get('nombre', '')}' eliminado exitosamente")
+											del st.session_state[f"confirm_delete_proyecto_{proyecto.get('id')}"]
+											st.rerun()
+										except Exception as e:
+											st.error(f"❌ Error al eliminar: {str(e)}")
+											del st.session_state[f"confirm_delete_proyecto_{proyecto.get('id')}"]
+								with col_no:
+									if st.button("❌ No, cancelar", key=f"no_delete_proyecto_{proyecto.get('id')}"):
+										del st.session_state[f"confirm_delete_proyecto_{proyecto.get('id')}"]
+										st.rerun()
+						except Exception as e:
+							st.error(f"❌ Error al verificar personal asignado: {str(e)}")
+							if f"confirm_delete_proyecto_{proyecto.get('id')}" in st.session_state:
+								del st.session_state[f"confirm_delete_proyecto_{proyecto.get('id')}"]
 		else:
 			st.info("No hay proyectos registrados")
 	
@@ -1586,6 +1678,67 @@ def page_gestionar_clientes():
 					with col2:
 						st.markdown(f"**Teléfono:** {cliente.get('telefono', 'N/A')}")
 						st.markdown(f"**Dirección:** {cliente.get('direccion', 'N/A')}")
+					
+					# Listado de proyectos asignados
+					try:
+						proyectos_asignados = supabase.table("proyectos").select("nombre").eq("cliente_id", cliente.get('id')).execute()
+						if proyectos_asignados.data and len(proyectos_asignados.data) > 0:
+							st.markdown("---")
+							st.markdown("**Proyectos asignados:**")
+							proyectos_list = []
+							for idx, proy in enumerate(proyectos_asignados.data, 1):
+								nombre_proyecto = proy.get('nombre', '').strip()
+								if nombre_proyecto:
+									proyectos_list.append(f"{idx}. {nombre_proyecto}")
+							if proyectos_list:
+								st.markdown("\n".join(proyectos_list))
+						else:
+							st.markdown("---")
+							st.markdown("*Sin proyectos asignados*")
+					except Exception as e:
+						st.markdown("---")
+						st.markdown("*Error al cargar proyectos asignados*")
+					
+					# Botón de eliminar
+					st.markdown("---")
+					col_delete1, col_delete2 = st.columns([3, 1])
+					with col_delete2:
+						if st.button("🗑️ Eliminar", key=f"delete_cliente_{cliente.get('id')}", type="secondary"):
+							if f"confirm_delete_cliente_{cliente.get('id')}" not in st.session_state:
+								st.session_state[f"confirm_delete_cliente_{cliente.get('id')}"] = True
+								st.rerun()
+					
+					# Mostrar diálogo de confirmación si se hizo clic en eliminar
+					if f"confirm_delete_cliente_{cliente.get('id')}" in st.session_state and st.session_state[f"confirm_delete_cliente_{cliente.get('id')}"]:
+						# Verificar si hay proyectos asociados
+						try:
+							proyectos_asociados = supabase.table("proyectos").select("id, nombre").eq("cliente_id", cliente.get('id')).execute()
+							if proyectos_asociados.data and len(proyectos_asociados.data) > 0:
+								st.warning(f"⚠️ No se puede eliminar el cliente porque tiene {len(proyectos_asociados.data)} proyecto(s) asociado(s). Primero elimina o cambia los proyectos.")
+								if st.button("❌ Cerrar", key=f"close_warning_cliente_{cliente.get('id')}"):
+									del st.session_state[f"confirm_delete_cliente_{cliente.get('id')}"]
+									st.rerun()
+							else:
+								st.warning(f"⚠️ ¿Estás seguro de eliminar al cliente '{cliente.get('nombre', '')}'?")
+								col_yes, col_no = st.columns(2)
+								with col_yes:
+									if st.button("✅ Sí, eliminar", key=f"yes_delete_cliente_{cliente.get('id')}", type="primary"):
+										try:
+											supabase.table("clientes").delete().eq("id", cliente.get('id')).execute()
+											st.success(f"✅ Cliente '{cliente.get('nombre', '')}' eliminado exitosamente")
+											del st.session_state[f"confirm_delete_cliente_{cliente.get('id')}"]
+											st.rerun()
+										except Exception as e:
+											st.error(f"❌ Error al eliminar: {str(e)}")
+											del st.session_state[f"confirm_delete_cliente_{cliente.get('id')}"]
+								with col_no:
+									if st.button("❌ No, cancelar", key=f"no_delete_cliente_{cliente.get('id')}"):
+										del st.session_state[f"confirm_delete_cliente_{cliente.get('id')}"]
+										st.rerun()
+						except Exception as e:
+							st.error(f"❌ Error al verificar proyectos asociados: {str(e)}")
+							if f"confirm_delete_cliente_{cliente.get('id')}" in st.session_state:
+								del st.session_state[f"confirm_delete_cliente_{cliente.get('id')}"]
 		else:
 			st.info("No hay clientes registrados")
 	
