@@ -717,40 +717,70 @@ def page_inicio():
 			# Ordenar por días restantes (menos días primero)
 			proyectos_por_terminar.sort(key=lambda x: x['dias_restantes'])
 			
-			# Obtener profesionales asignados a esos proyectos
+			# Obtener profesionales que quedarán libres
+			# Criterios: 
+			# 1. Profesionales con proyectos que terminan en menos de 30 días
+			# 2. Profesionales contratados con fecha_termino_contrato en menos de 30 días
 			profesionales_libres = []
-			if proyectos_ids:
-				personal_response = supabase.table("personal").select(
-					"id, nombre, apellido, rut, carrera_estudios, proyecto_id, proyectos(nombre, fecha_fin)"
-				).in_("proyecto_id", proyectos_ids).eq("activo", True).execute()
+			
+			# Obtener todos los profesionales activos con información de proyectos y fecha de término de contrato
+			personal_response = supabase.table("personal").select(
+				"id, nombre, apellido, rut, carrera_estudios, proyecto_id, fecha_termino_contrato, contratado, proyectos(nombre, fecha_fin)"
+			).eq("activo", True).execute()
+			
+			personal_list = personal_response.data if personal_response.data else []
+			
+			for persona in personal_list:
+				dias_restantes = None
+				razon = None
+				proyecto_actual = None
 				
-				personal_list = personal_response.data if personal_response.data else []
+				# Criterio 1: Verificar si el proyecto asignado termina en menos de 30 días
+				proyecto_info = persona.get('proyectos')
+				if proyecto_info:
+					# Si es una lista (no debería serlo, pero por seguridad)
+					if isinstance(proyecto_info, list) and len(proyecto_info) > 0:
+						proyecto_info = proyecto_info[0]
+					
+					if proyecto_info and proyecto_info.get('fecha_fin'):
+						try:
+							fecha_fin_proyecto = datetime.strptime(proyecto_info['fecha_fin'], '%Y-%m-%d').date()
+							if hoy <= fecha_fin_proyecto <= fecha_limite:
+								dias_restantes = (fecha_fin_proyecto - hoy).days
+								razon = "Término de proyecto"
+								proyecto_actual = proyecto_info.get('nombre', 'N/A')
+						except (ValueError, TypeError):
+							pass
 				
-				for persona in personal_list:
-					# Manejar la relación con proyectos (puede ser objeto o None)
-					proyecto_info = persona.get('proyectos')
-					if proyecto_info:
-						# Si es una lista (no debería serlo, pero por seguridad)
-						if isinstance(proyecto_info, list) and len(proyecto_info) > 0:
-							proyecto_info = proyecto_info[0]
-						
-						if proyecto_info and proyecto_info.get('fecha_fin'):
-							try:
-								fecha_fin = datetime.strptime(proyecto_info['fecha_fin'], '%Y-%m-%d').date()
-								dias_restantes = (fecha_fin - hoy).days
-								profesionales_libres.append({
-									'nombre': persona.get('nombre', ''),
-									'apellido': persona.get('apellido', ''),
-									'rut': persona.get('rut', ''),
-									'carrera_estudios': persona.get('carrera_estudios', 'N/A') or 'N/A',
-									'proyecto_actual': proyecto_info.get('nombre', 'N/A'),
-									'dias_restantes': dias_restantes
-								})
-							except (ValueError, TypeError):
-								continue
+				# Criterio 2: Verificar si está contratado y su contrato termina en menos de 30 días
+				if persona.get('contratado') and persona.get('fecha_termino_contrato'):
+					try:
+						fecha_termino_contrato = datetime.strptime(persona['fecha_termino_contrato'], '%Y-%m-%d').date()
+						if hoy <= fecha_termino_contrato <= fecha_limite:
+							dias_restantes_contrato = (fecha_termino_contrato - hoy).days
+							# Si no tiene proyecto o el contrato termina antes que el proyecto, usar la fecha del contrato
+							if dias_restantes is None or dias_restantes_contrato < dias_restantes:
+								dias_restantes = dias_restantes_contrato
+								razon = "Término de contrato"
+								if not proyecto_actual:
+									proyecto_actual = "Sin proyecto asignado"
+					except (ValueError, TypeError):
+						pass
 				
-				# Ordenar por días restantes (menos días primero)
-				profesionales_libres.sort(key=lambda x: x['dias_restantes'])
+				# Si cumple alguno de los criterios, agregarlo a la lista
+				if dias_restantes is not None and razon:
+					profesionales_libres.append({
+						'nombre': persona.get('nombre', ''),
+						'apellido': persona.get('apellido', ''),
+						'rut': persona.get('rut', ''),
+						'carrera_estudios': persona.get('carrera_estudios', 'N/A') or 'N/A',
+						'proyecto_actual': proyecto_actual or 'N/A',
+						'dias_restantes': dias_restantes,
+						'razon': razon
+					})
+			
+			# Ordenar por días restantes (menos días primero)
+			profesionales_libres.sort(key=lambda x: x['dias_restantes'])
 			
 			# Mostrar en dos columnas
 			col1, col2 = st.columns(2)
@@ -786,6 +816,7 @@ def page_inicio():
 									<strong>RUT:</strong> {profesional['rut']}<br>
 									<strong>Estudios:</strong> {profesional['carrera_estudios'][:50]}{'...' if len(profesional['carrera_estudios']) > 50 else ''}<br>
 									<strong>Proyecto actual:</strong> {profesional['proyecto_actual']}<br>
+									<strong>Razón:</strong> {profesional['razon']}<br>
 									<strong>Días para estar libre:</strong> {profesional['dias_restantes']} días
 								</p>
 							</div>
@@ -1304,6 +1335,21 @@ def page_gestionar_personal():
 									break
 						selected_proyecto = st.selectbox("Proyecto", proyecto_keys, index=proyecto_index)
 					
+					# Fecha de término de contrato
+					fecha_termino_contrato_actual = None
+					if person_data.get('fecha_termino_contrato'):
+						try:
+							fecha_termino_contrato_actual = datetime.fromisoformat(person_data.get('fecha_termino_contrato')).date()
+						except (ValueError, TypeError):
+							pass
+					
+					edit_fecha_termino_contrato = st.date_input(
+						"Fecha de Término de Contrato",
+						value=fecha_termino_contrato_actual,
+						help="Fecha en que termina el contrato del profesional (solo para profesionales contratados)",
+						disabled=False
+					)
+					
 					# Sistema de puntuación de calidad (1-5 estrellas)
 					st.markdown("---")
 					st.markdown("### ⭐ Puntuación de Calidad")
@@ -1336,6 +1382,14 @@ def page_gestionar_personal():
 						# Normalizar RUT antes de guardar
 						rut_normalized = normalize_rut(edit_rut)
 						
+						# Solo guardar fecha_termino_contrato si está contratado
+						fecha_termino_contrato_value = None
+						if edit_contratado and edit_fecha_termino_contrato:
+							fecha_termino_contrato_value = edit_fecha_termino_contrato.isoformat()
+						elif not edit_contratado:
+							# Si no está contratado, limpiar la fecha
+							fecha_termino_contrato_value = None
+						
 						update_data = {
 							"rut": rut_normalized,  # RUT normalizado (solo primeros 8 dígitos)
 							"nombre": edit_nombre,
@@ -1352,6 +1406,7 @@ def page_gestionar_personal():
 							"contratado": edit_contratado,
 							"proyecto_id": proyectos_options[selected_proyecto],
 							"puntuacion_calidad": puntuacion_opciones[selected_puntuacion],
+							"fecha_termino_contrato": fecha_termino_contrato_value,
 							"updated_at": datetime.now().isoformat()
 						}
 						
