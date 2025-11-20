@@ -338,15 +338,37 @@ def upload_cv_to_storage(file, rut: str, file_extension: str) -> Optional[str]:
 		ensure_bucket_exists(supabase, "cvs")
 		
 		# Leer el contenido del archivo como bytes
-		file.seek(0)  # Asegurarse de que estamos al inicio del archivo
+		# Intentar resetear el puntero si es posible
+		import io
+		try:
+			file.seek(0)
+		except (AttributeError, io.UnsupportedOperation):
+			# Si no se puede hacer seek, el archivo puede estar en una posición incorrecta
+			pass
+		
 		file_content = file.read()
+		
+		# Si el contenido está vacío, intentar leer de nuevo desde el inicio
+		if not file_content or len(file_content) == 0:
+			try:
+				file.seek(0)
+				file_content = file.read()
+			except (AttributeError, io.UnsupportedOperation):
+				pass
 		
 		# Asegurar que el contenido es bytes
 		if isinstance(file_content, str):
 			file_content = file_content.encode('utf-8')
 		elif not isinstance(file_content, bytes):
 			# Si no es bytes ni string, intentar convertirlo
-			file_content = bytes(file_content)
+			try:
+				file_content = bytes(file_content)
+			except TypeError:
+				# Si no se puede convertir, intentar leer el archivo de otra manera
+				if hasattr(file, 'getvalue'):
+					file_content = file.getvalue()
+				else:
+					raise Exception("No se pudo leer el contenido del archivo")
 		
 		# Crear nombre único para el archivo usando RUT normalizado y timestamp
 		timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -414,14 +436,69 @@ def upload_cv_to_storage(file, rut: str, file_extension: str) -> Optional[str]:
 		if not file_name_str or len(file_name_str) == 0:
 			file_name_str = f"cv_{timestamp}.{file_extension}"
 		
+		# Asegurar que file_name_str es un string válido y no está vacío
+		file_name_str = str(file_name_str).strip()
+		if not file_name_str:
+			file_name_str = f"cv_{timestamp}.{file_extension}"
+		
+		# Validar que sea ASCII y no tenga caracteres problemáticos
+		try:
+			file_name_str.encode('ascii')
+		except UnicodeEncodeError:
+			# Si tiene caracteres no ASCII, usar solo timestamp
+			file_name_str = f"cv_{timestamp}.{file_extension}"
+		
+		# Asegurar que el contenido del archivo es bytes
+		if not isinstance(file_content, bytes):
+			raise Exception("El contenido del archivo debe ser bytes")
+		
+		# Asegurar que file_name_str es exactamente un string (no bytes, no None)
+		file_name_str = str(file_name_str).strip()
+		
+		# Validación final del nombre del archivo - debe ser ASCII válido
+		if not file_name_str or not isinstance(file_name_str, str):
+			file_name_str = f"cv_{timestamp}.{file_extension}"
+		
+		# Asegurar que es ASCII válido
+		try:
+			file_name_str.encode('ascii')
+		except UnicodeEncodeError:
+			file_name_str = f"cv_{timestamp}.{file_extension}"
+		
+		# Asegurar que el contenido del archivo es bytes
+		if not isinstance(file_content, bytes):
+			raise Exception("El contenido del archivo debe ser bytes")
+		
+		# Validar que el nombre del archivo no esté vacío
+		if not file_name_str or len(file_name_str) == 0:
+			file_name_str = f"cv_{timestamp}.{file_extension}"
+		
 		# Método Único y Robusto: Usar argumentos de palabra clave (kwargs)
 		# Esto elimina cualquier ambigüedad sobre el orden de los parámetros
 		try:
-			response = supabase.storage.from_("cvs").upload(
-				path=file_name_str,  # 1. Nombre de archivo (string) - argumento de palabra clave
-				file=file_content,   # 2. Contenido binario (bytes) - argumento de palabra clave
-				file_options={"content-type": content_type, "upsert": True}
-			)
+			# Debug: Verificar tipos antes de subir
+			if not isinstance(file_name_str, str):
+				raise Exception(f"El nombre del archivo no es un string: {type(file_name_str)}")
+			
+			# Usar la API de Supabase Storage
+			# Intentar primero con parámetros posicionales, luego con keywords
+			try:
+				# Método 1: Parámetros posicionales
+				response = supabase.storage.from_("cvs").upload(
+					file_name_str,  # path (posición 1)
+					file_content,   # file (posición 2)
+					{"content-type": content_type, "upsert": True}  # file_options (posición 3)
+				)
+			except TypeError:
+				# Método 2: Parámetros con keywords
+				response = supabase.storage.from_("cvs").upload(
+					path=file_name_str,  # Nombre del archivo (string)
+					file=file_content,   # Contenido binario (bytes)
+					file_options={
+						"content-type": content_type,
+						"upsert": True
+					}
+				)
 			
 			# Verificar que la subida fue exitosa
 			if response and 'error' not in str(response):
@@ -433,6 +510,15 @@ def upload_cv_to_storage(file, rut: str, file_extension: str) -> Optional[str]:
 				error_msg = response.get('error', 'Error desconocido en la respuesta de Supabase') if isinstance(response, dict) else str(response)
 				raise Exception(f"Error en la respuesta de Supabase: {error_msg}")
 		except Exception as e:
+			# Agregar información de debugging
+			error_details = {
+				"file_name_type": str(type(file_name_str)),
+				"file_name_value": file_name_str[:50] if len(file_name_str) > 50 else file_name_str,
+				"file_content_type": str(type(file_content)),
+				"file_content_length": len(file_content) if file_content else 0,
+				"original_error": str(e)
+			}
+			st.error(f"Detalles del error de subida: {error_details}")
 			# Re-lanzar el error para que sea manejado por el bloque try-except externo
 			raise e
 			
@@ -938,13 +1024,8 @@ def process_multiple_cvs(uploaded_files_list):
 						"resumen_ia": processed_data.get("resumen_ia")
 					}
 					
-					# Subir CV a Storage
-					cv_url = None
-					file_extension = "pdf" if uploaded_file.type == "application/pdf" else "docx"
-					cv_url = upload_cv_to_storage(uploaded_file, rut_normalized, file_extension)
-					
-					# Guardar en base de datos
-					if save_personal_to_db(personal_data, cv_url):
+					# Guardar en base de datos (sin subir CV a Storage)
+					if save_personal_to_db(personal_data, None):
 						st.success(f"✅ {nombre} {apellido} (RUT: {rut_normalized}) - Guardado exitosamente")
 						success_count += 1
 					else:
@@ -973,11 +1054,19 @@ def process_multiple_cvs(uploaded_files_list):
 def process_single_cv(uploaded_file):
 	"""Procesa un solo CV y permite edición antes de guardar"""
 	with st.spinner("Procesando CV..."):
+		# Guardar el contenido del archivo en memoria para poder usarlo después
+		uploaded_file.seek(0)
+		file_content_bytes = uploaded_file.read()
+		
+		# Crear un objeto BytesIO para poder leerlo múltiples veces
+		from io import BytesIO
+		file_for_processing = BytesIO(file_content_bytes)
+		
 		# Extraer texto según el tipo de archivo
 		if uploaded_file.type == "application/pdf":
-			cv_text = extract_text_from_pdf(uploaded_file)
+			cv_text = extract_text_from_pdf(file_for_processing)
 		elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-			cv_text = extract_text_from_docx(uploaded_file)
+			cv_text = extract_text_from_docx(file_for_processing)
 		else:
 			st.error("Formato de archivo no soportado")
 			return
@@ -985,6 +1074,13 @@ def process_single_cv(uploaded_file):
 		if not cv_text:
 			st.error("No se pudo extraer texto del archivo")
 			return
+		
+		# Guardar el contenido del archivo en session_state para usarlo al guardar
+		if 'cv_file_content' not in st.session_state:
+			st.session_state.cv_file_content = {}
+		st.session_state.cv_file_content['bytes'] = file_content_bytes
+		st.session_state.cv_file_content['type'] = uploaded_file.type
+		st.session_state.cv_file_content['name'] = uploaded_file.name
 		
 		# Mostrar texto extraído (opcional, en un expander)
 		with st.expander("Ver texto extraído del CV"):
@@ -1046,21 +1142,12 @@ def process_single_cv(uploaded_file):
 			
 			if st.button("💾 Guardar en Base de Datos", type="primary"):
 				if edited_data["rut"] and edited_data["nombre"] and edited_data["apellido"]:
-					# Subir CV a Storage antes de guardar
-					cv_url = None
-					if uploaded_file is not None:
-						with st.spinner("📤 Subiendo CV a Storage..."):
-							file_extension = "pdf" if uploaded_file.type == "application/pdf" else "docx"
-							cv_url = upload_cv_to_storage(uploaded_file, edited_data["rut"], file_extension)
-							if cv_url:
-								st.success("✅ CV subido exitosamente")
-							else:
-								st.warning("⚠️ No se pudo subir el CV, pero se guardará la información")
-					
-					if save_personal_to_db(edited_data, cv_url):
+					# Guardar en base de datos (sin subir CV a Storage)
+					if save_personal_to_db(edited_data, None):
 						st.success("✅ Personal guardado exitosamente en la base de datos")
-						if cv_url:
-							st.info(f"📄 CV disponible en: {cv_url}")
+						# Limpiar el contenido del archivo de session_state después de guardar
+						if 'cv_file_content' in st.session_state:
+							del st.session_state.cv_file_content
 					else:
 						st.error("❌ Error al guardar en la base de datos")
 				else:
@@ -1112,24 +1199,6 @@ def page_buscar_candidatos():
 									st.markdown(f"**Puntuación de Calidad:** Sin puntuación")
 								if candidate.get('proyecto_id'):
 									st.markdown(f"**Proyecto Asignado:** {candidate.get('proyecto_id')}")
-							
-							# Visualización del CV
-							if candidate.get('cv_url'):
-								st.markdown("---")
-								st.markdown("### 📄 Curriculum Vitae")
-								cv_url = candidate.get('cv_url')
-								
-								if cv_url.endswith('.pdf'):
-									st.markdown(f"**Ver CV:** [Abrir PDF en nueva pestaña]({cv_url})")
-									try:
-										st.components.v1.iframe(cv_url, height=600, scrolling=True)
-									except:
-										st.markdown(f"[Descargar PDF]({cv_url})")
-								elif cv_url.endswith('.docx'):
-									st.markdown(f"**Descargar CV:** [Descargar DOCX]({cv_url})")
-									st.info("💡 Los archivos DOCX deben descargarse para visualizarlos")
-								else:
-									st.markdown(f"**Ver CV:** [Abrir archivo]({cv_url})")
 							
 							if candidate.get('experiencia'):
 								st.markdown(f"**Experiencia:**\n{candidate.get('experiencia')}")
@@ -1223,28 +1292,6 @@ def page_gestionar_personal():
 						if person.get('proyecto_id'):
 							st.markdown(f"**Proyecto ID:** {person.get('proyecto_id')}")
 					
-					# Visualización del CV
-					if person.get('cv_url'):
-						st.markdown("---")
-						st.markdown("### 📄 Curriculum Vitae")
-						cv_url = person.get('cv_url')
-						
-						# Determinar si es PDF o DOCX para mostrar correctamente
-						if cv_url.endswith('.pdf'):
-							st.markdown(f"**Ver CV:** [Abrir PDF en nueva pestaña]({cv_url})")
-							# Mostrar PDF embebido si es posible
-							try:
-								st.components.v1.iframe(cv_url, height=600, scrolling=True)
-							except:
-								st.markdown(f"[Descargar PDF]({cv_url})")
-						elif cv_url.endswith('.docx'):
-							st.markdown(f"**Descargar CV:** [Descargar DOCX]({cv_url})")
-							st.info("💡 Los archivos DOCX deben descargarse para visualizarlos")
-						else:
-							st.markdown(f"**Ver CV:** [Abrir archivo]({cv_url})")
-					else:
-						st.info("ℹ️ No hay CV disponible para esta persona")
-					
 					if person.get('experiencia'):
 						st.markdown(f"**Experiencia:**\n{person.get('experiencia')}")
 					
@@ -1270,25 +1317,6 @@ def page_gestionar_personal():
 			if selected_person:
 				person_id = person_options_dict[selected_person]
 				person_data = supabase.table("personal").select("*").eq("id", person_id).execute().data[0]
-				
-				# Mostrar CV si está disponible
-				if person_data.get('cv_url'):
-					st.markdown("### 📄 Curriculum Vitae")
-					cv_url = person_data.get('cv_url')
-					
-					if cv_url.endswith('.pdf'):
-						st.markdown(f"**Ver CV:** [Abrir PDF en nueva pestaña]({cv_url})")
-						try:
-							st.components.v1.iframe(cv_url, height=600, scrolling=True)
-						except:
-							st.markdown(f"[Descargar PDF]({cv_url})")
-					elif cv_url.endswith('.docx'):
-						st.markdown(f"**Descargar CV:** [Descargar DOCX]({cv_url})")
-						st.info("💡 Los archivos DOCX deben descargarse para visualizarlos")
-					else:
-						st.markdown(f"**Ver CV:** [Abrir archivo]({cv_url})")
-					
-					st.markdown("---")
 				
 				# Obtener proyectos para asignar
 				proyectos_response = supabase.table("proyectos").select("id, nombre").execute()
